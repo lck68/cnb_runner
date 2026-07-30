@@ -1,4 +1,4 @@
-name: CNB macos app
+name: CNB macos fuck app
 on:
   workflow_dispatch:
     inputs:
@@ -65,29 +65,36 @@ jobs:
       - name: 生成 DMG 安装包
         run: |
           APP="repo/dist/SFshell.app"
-          DMG_NAME="SFshell-macOS-${{ matrix.arch }}.dmg"
-          DMG_TMP="SFshell-tmp.dmg"
-          DMG_FINAL="$DMG_NAME"
 
           echo "=== 验证 .app ==="
-          ls -la "$APP/Contents/MacOS/"
+          ls "$APP/Contents/MacOS/SFshell" || {
+            echo "ERROR: .app 不存在，dist 目录内容:"
+            ls -la repo/dist/
+            exit 1
+          }
+          echo "OK"
           echo ""
 
-          # 创建临时 DMG
-          APP_SIZE=$(du -sk "$APP" | cut -f1)
-          DMG_SIZE=$((APP_SIZE + 20480))  # 多留 20MB
+          # 创建临时打包目录（只放 .app）
+          STAGE="dmg_stage"
+          mkdir -p "$STAGE"
+          cp -R "$APP" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
 
-          hdiutil create -volname "SFshell" -srcfolder repo/dist -ov -format UDRW \
+          # 计算 DMG 大小
+          APP_SIZE=$(du -sk "$STAGE" | cut -f1)
+          DMG_SIZE=$((APP_SIZE + 20480))
+
+          DMG_TMP="SFshell-tmp.dmg"
+          DMG_FINAL="SFshell-macOS-${{ matrix.arch }}.dmg"
+
+          hdiutil create -volname "SFshell" -srcfolder "$STAGE" -ov -format UDRW \
             -size ${DMG_SIZE}k "$DMG_TMP"
 
-          # 挂载 DMG 并设置图标布局
+          # 挂载并设置 Finder 布局
           DEV=$(hdiutil attach -readwrite -noverify -noautoopen "$DMG_TMP" | egrep '^/dev/' | sed 1q | awk '{print $1}')
           sleep 2
 
-          # 创建 Applications 快捷方式
-          ln -s /Applications "/Volumes/SFshell/Applications"
-
-          # 设置窗口布局
           osascript <<EOF
           tell application "Finder"
             tell disk "SFshell"
@@ -106,7 +113,6 @@ jobs:
           end tell
           EOF
 
-          # 卸载并转换为压缩 DMG
           hdiutil detach "$DEV" -force
           hdiutil convert "$DMG_TMP" -format UDZO -imagekey zlib-level=9 -o "$DMG_FINAL"
           rm -f "$DMG_TMP"

@@ -1,0 +1,114 @@
+name: CNB 全架构构建节点
+on:
+  workflow_dispatch:
+  # schedule:
+  #   - cron: '0 */5 * * *' # 每5小时滚动重启，规避6小时超时
+
+jobs:
+  start-runner:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 350
+    fail-fast: false # 单个节点故障不影响其他节点
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            arch: arm64
+            platform: darwin
+            id_secret: ${{ secrets.SELF_HOSTED_ID_MAC_ARM64 }}
+          - os: macos-13
+            arch: amd64
+            platform: darwin
+            id_secret: ${{ secrets.SELF_HOSTED_ID_MAC_AMD64 }}
+          - os: windows-latest
+            arch: amd64
+            platform: windows
+            id_secret: ${{ secrets.SELF_HOSTED_ID_WIN_AMD64 }}
+          - os: windows-11-arm
+            arch: arm64
+            platform: windows
+            id_secret: ${{ secrets.SELF_HOSTED_ID_WIN_ARM64 }}
+
+    env:
+      RUNNER_VERSION: "1.68.0"
+      ORANGE_RUNNER_CONFIG_DIR: ${{ github.workspace }}/orange-ci/etc
+      ORANGE_RUNNER_DATA_DIR: ${{ github.workspace }}/orange-ci/data
+
+    steps:
+      - name: 初始化目录（通用）
+        run: |
+          mkdir -p "$env:ORANGE_RUNNER_CONFIG_DIR/orange-ci"
+          mkdir -p "$env:ORANGE_RUNNER_DATA_DIR/orange-runner/logs"
+        shell: pwsh
+
+      # ========== macOS 节点执行流程 ==========
+      - name: 下载并配置 orange-runner（macOS）
+        if: matrix.platform == 'darwin'
+        run: |
+          ARCHIVE_NAME="orange-runner-${RUNNER_VERSION}-darwin-${{ matrix.arch }}.tar.gz"
+          
+          # 下载解压
+          curl -fsSL --max-time 300 \
+            "https://cnb.cool/cnb/cool/orange-runner-doc/-/releases/download/${RUNNER_VERSION}/${ARCHIVE_NAME}" \
+            -o "$RUNNER_TEMP/${ARCHIVE_NAME}"
+          sudo tar -zxf "$RUNNER_TEMP/${ARCHIVE_NAME}" -C /usr/local/bin/
+          sudo chmod +x /usr/local/bin/orange-runner
+          sudo xattr -dr com.apple.quarantine /usr/local/bin/orange-runner 2>/dev/null || true
+
+          # 生成配置文件
+          cat > "$ORANGE_RUNNER_CONFIG_DIR/orange-ci/runner-config.json" <<EOF
+          {
+            "cpus": -1,
+            "defaultCpus": -1,
+            "memory": -1,
+            "quotaSize": {},
+            "allowUseThisRunner": {},
+            "useDocker": false,
+            "disableRsync": true,
+            "disableTls": true,
+            "connectorEndpoint": "${{ secrets.CONNECTOR_ENDPOINT }}",
+            "selfHostedId": "${{ matrix.id_secret }}",
+            "dataRootDir": "$ORANGE_RUNNER_DATA_DIR"
+          }
+          EOF
+        shell: bash
+
+      # ========== Windows 节点执行流程 ==========
+      - name: 下载并配置 orange-runner（Windows）
+        if: matrix.platform == 'windows'
+        run: |
+          $ArchiveName = "orange-runner-$env:RUNNER_VERSION-windows-${{ matrix.arch }}.zip"
+          $DownloadPath = "$env:RUNNER_TEMP\$ArchiveName"
+          
+          # 下载解压
+          Invoke-WebRequest -Uri "https://cnb.cool/cnb/cool/orange-runner-doc/-/releases/download/$env:RUNNER_VERSION/$ArchiveName" -OutFile $DownloadPath
+          Expand-Archive -Path $DownloadPath -DestinationPath "C:\Windows\System32\" -Force
+          
+          # 生成配置文件
+          $ConfigJson = @"
+          {
+            "cpus": -1,
+            "defaultCpus": -1,
+            "memory": -1,
+            "quotaSize": {},
+            "allowUseThisRunner": {},
+            "useDocker": false,
+            "disableRsync": true,
+            "disableTls": true,
+            "connectorEndpoint": "${{ secrets.CONNECTOR_ENDPOINT }}",
+            "selfHostedId": "${{ matrix.id_secret }}",
+            "dataRootDir": "$env:ORANGE_RUNNER_DATA_DIR"
+          }
+          "@
+          $ConfigJson | Out-File -FilePath "$env:ORANGE_RUNNER_CONFIG_DIR\orange-ci\runner-config.json" -Encoding utf8
+        shell: pwsh
+
+      # ========== 启动节点（前台常驻） ==========
+      - name: 启动 CNB Runner 并保持在线
+        run: |
+          if ("${{ matrix.platform }}" -eq "windows") {
+            orange-runner.exe
+          } else {
+            /usr/local/bin/orange-runner
+          }
+        shell: pwsh

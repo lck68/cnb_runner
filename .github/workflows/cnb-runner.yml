@@ -1,0 +1,64 @@
+name: CNB macOS 构建节点
+on:
+  workflow_dispatch: # 手动触发
+  # schedule: # 如需自动保活，取消注释，每5小时重启一次（规避6小时超时）
+  #   - cron: '0 */5 * * *'
+
+jobs:
+  start-runner:
+    runs-on: macos-latest # 可指定 macos-13 (Intel) / macos-14+ (Apple Silicon)
+    timeout-minutes: 350  # 单作业留10分钟余量，避免6小时硬超时强制杀进程
+    env:
+      ORANGE_RUNNER_CONFIG_DIR: ${{ github.workspace }}/orange-ci/etc
+      ORANGE_RUNNER_DATA_DIR: ${{ github.workspace }}/orange-ci/data
+
+    steps:
+      - name: 初始化目录
+        run: |
+          mkdir -p "$ORANGE_RUNNER_CONFIG_DIR/orange-ci"
+          mkdir -p "$ORANGE_RUNNER_DATA_DIR/orange-runner/logs"
+
+      - name: 下载 orange-runner 二进制
+        run: |
+          # 获取最新版本号
+          RUNNER_VERSION=$(curl -fsSL --connect-timeout 10 \
+            https://cnb.cool/cnb/cool/orange-runner-doc/-/releases/latest | xargs basename)
+          echo "RUNNER_VERSION=$RUNNER_VERSION" >> $GITHUB_ENV
+
+          # 自动识别架构 (amd64/arm64)
+          ARCH=$(uname -m | sed 's/x86_64/amd64/g')
+          ARCHIVE_NAME="orange-runner-${RUNNER_VERSION}-darwin-${ARCH}.tar.gz"
+
+          # 下载并解压到系统路径
+          curl -fsSL --max-time 300 \
+            "https://cnb.cool/cnb/cool/orange-runner-doc/-/releases/download/${RUNNER_VERSION}/${ARCHIVE_NAME}" \
+            -o "$RUNNER_TEMP/${ARCHIVE_NAME}"
+          sudo tar -zxf "$RUNNER_TEMP/${ARCHIVE_NAME}" -C /usr/local/bin/
+          sudo chmod +x /usr/local/bin/orange-runner
+
+          # 移除 macOS 隔离属性，解决「无法打开」的安全拦截
+          sudo xattr -dr com.apple.quarantine /usr/local/bin/orange-runner 2>/dev/null || true
+
+      - name: 生成节点配置文件
+        run: |
+          cat > "$ORANGE_RUNNER_CONFIG_DIR/orange-ci/runner-config.json" <<EOF
+          {
+            "cpus": -1,
+            "defaultCpus": -1,
+            "memory": -1,
+            "quotaSize": {},
+            "allowUseThisRunner": {},
+            "useDocker": false,
+            "disableRsync": true,
+            "disableTls": true,
+            "connectorEndpoint": "${{ secrets.CONNECTOR_ENDPOINT }}",
+            "selfHostedId": "${{ secrets.SELF_HOSTED_ID }}",
+            "dataRootDir": "$ORANGE_RUNNER_DATA_DIR"
+          }
+          EOF
+
+      - name: 启动 CNB Runner 并保持在线
+        run: |
+          echo "✅ 节点正在启动，连接成功后即可在 CNB 分配任务"
+          echo "⏱️  本节点最长运行 350 分钟，超时将自动销毁"
+          /usr/local/bin/orange-runner

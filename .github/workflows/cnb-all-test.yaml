@@ -29,15 +29,15 @@ jobs:
 
     env:
       RUNNER_VERSION: "1.68.0"
-      ORANGE_RUNNER_CONFIG_DIR: ${{ github.workspace }}/orange-ci/etc
-      ORANGE_RUNNER_DATA_DIR: ${{ github.workspace }}/orange-ci/data
+      ORANGE_CONFIG_DIR: /Users/runner/orange-ci/etc/orange-ci
+      ORANGE_DATA_DIR: /Users/runner/orange-ci/data
 
     steps:
       - name: 初始化目录（macOS）
         if: matrix.platform == 'darwin'
         run: |
-          mkdir -p "$ORANGE_RUNNER_CONFIG_DIR/orange-ci"
-          mkdir -p "$ORANGE_RUNNER_DATA_DIR/orange-runner/logs"
+          mkdir -p "$ORANGE_CONFIG_DIR"
+          mkdir -p "$ORANGE_DATA_DIR/orange-runner/logs"
         shell: bash
 
       - name: 初始化目录（Windows）
@@ -99,7 +99,7 @@ jobs:
           echo 'echo "fork/exec test OK"' | /bin/sh 2>&1
 
           echo "=== 写入 runner 配置 ==="
-          cat > "$ORANGE_RUNNER_CONFIG_DIR/orange-ci/runner-config.json" <<EOF
+          cat > "$ORANGE_CONFIG_DIR/runner-config.json" <<EOF
           {
             "cpus": -1,
             "defaultCpus": -1,
@@ -111,7 +111,7 @@ jobs:
             "disableTls": true,
             "connectorEndpoint": "${{ secrets.CONNECTOR_ENDPOINT }}",
             "selfHostedId": "${{ secrets[matrix.id_secret] }}",
-            "dataRootDir": "$ORANGE_RUNNER_DATA_DIR"
+            "dataRootDir": "$ORANGE_DATA_DIR"
           }
           EOF
           echo "配置完成"

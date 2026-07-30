@@ -1,10 +1,15 @@
-name: CNB test
+name: CNB 全架构构建节点test
 on:
   workflow_dispatch:
+    inputs:
+      branch:
+        description: '要构建的分支'
+        required: false
+        default: 'main'
 
 jobs:
   # ===================================================================
-  # macOS：直接用 GH Actions 构建（orange-runner 无法 fork/exec）
+  # macOS：直接从 CNB 拉代码，GH Actions 原生构建
   # ===================================================================
   build-macos:
     runs-on: ${{ matrix.os }}
@@ -19,8 +24,13 @@ jobs:
             arch: amd64
 
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
+      - name: 从 CNB 克隆代码
+        run: |
+          git clone --depth 1 --branch "${{ github.event.inputs.branch }}" \
+            "https://cnbcool:${{ secrets.CNB_TOKEN }}@cnb.cool/icxk/SFshell.git" repo
+          echo "=== 克隆完成 ==="
+          ls -la repo/
+        shell: bash
 
       - name: 预装构建工具
         run: |
@@ -31,32 +41,32 @@ jobs:
 
       - name: 构建前端
         run: |
-          cd client
+          cd repo/client
           npm install
           npm run build
         shell: bash
 
       - name: 安装 Python 依赖
         run: |
+          cd repo
           python3 -m pip install -r server/requirements.txt
         shell: bash
 
       - name: PyInstaller 打包
         run: |
+          cd repo
           python3 -m PyInstaller --clean build.spec
         shell: bash
 
       - name: 查看产物
         run: |
-          echo "=== dist 目录 ==="
-          ls -la dist/
-          echo "=== SFshell.app ==="
-          ls -la dist/SFshell.app/Contents/MacOS/ 2>/dev/null || echo "非 .app 格式"
+          ls -la repo/dist/
+          ls -la repo/dist/SFshell.app/Contents/MacOS/ 2>/dev/null || echo "非 .app 格式"
         shell: bash
 
       - name: 打包制品
         run: |
-          cd dist
+          cd repo/dist
           zip -r "SFshell-macOS-${{ matrix.arch }}.zip" *
           echo "制品: $(pwd)/SFshell-macOS-${{ matrix.arch }}.zip"
         shell: bash
@@ -65,7 +75,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: SFshell-macOS-${{ matrix.arch }}
-          path: dist/SFshell-macOS-${{ matrix.arch }}.zip
+          path: repo/dist/SFshell-macOS-${{ matrix.arch }}.zip
           retention-days: 30
 
   # ===================================================================

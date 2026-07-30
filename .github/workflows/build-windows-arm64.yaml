@@ -1,0 +1,54 @@
+name: github构建windows-arm64工作流
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: '要构建的分支'
+        required: false
+        default: 'main'
+
+jobs:
+  build-windows-arm64:
+    runs-on: windows-11-arm
+    timeout-minutes: 120
+
+    steps:
+      - name: 从 CNB 克隆代码
+        run: |
+          git clone --depth 1 --branch "${{ github.event.inputs.branch }}" \
+            "https://cnbcool:${{ secrets.CNB_TOKEN }}@cnb.cool/icxk/SFshell.git" repo
+          echo "=== 克隆完成 ==="
+          ls -la repo/
+        shell: bash
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'arm64' # 明确指定 ARM64 架构
+
+      - name: 构建前端
+        run: |
+          cd repo/client
+          npm install
+          npm run build
+        shell: bash
+
+      - name: 创建虚拟环境并安装依赖
+        run: |
+          python -m venv .venv
+          # Windows 下的 bash (Git Bash) 激活路径为 Scripts/activate
+          source .venv/Scripts/activate
+          cd repo
+          pip install -r server/requirements.txt
+        shell: bash
+
+      - name: PyInstaller 打包
+        run: |
+          source .venv/Scripts/activate
+          cd repo

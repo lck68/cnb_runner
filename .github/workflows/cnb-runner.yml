@@ -20,16 +20,8 @@ jobs:
 
       - name: 下载 orange-runner 二进制
         run: |
-          # 从 releases 页面提取第一个 x.y.z 格式的版本号
-          RUNNER_VERSION=$(curl -fsSL --connect-timeout 10 \
-            https://cnb.cool/cnb/cool/orange-runner-doc/-/releases/latest \
-            | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
-          
-          if [ -z "$RUNNER_VERSION" ]; then
-            echo "::error::无法自动提取最新版本号，请手动指定 RUNNER_VERSION"
-            exit 1
-          fi
-          
+          # 固定版本号，稳定性最高
+          RUNNER_VERSION="1.68.0"
           echo "RUNNER_VERSION=$RUNNER_VERSION" >> $GITHUB_ENV
 
           # 自动识别架构 (amd64/arm64)
@@ -45,6 +37,7 @@ jobs:
 
           # 移除 macOS 隔离属性，解决「无法打开」的安全拦截
           sudo xattr -dr com.apple.quarantine /usr/local/bin/orange-runner 2>/dev/null || true
+
 
       - name: 生成节点配置文件
         run: |

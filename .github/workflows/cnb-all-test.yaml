@@ -1,125 +1,103 @@
-name: CNB 全架构构建节点test
+name: CNB test
 on:
   workflow_dispatch:
 
 jobs:
-  start-runner:
+  # ===================================================================
+  # macOS：直接用 GH Actions 构建（orange-runner 无法 fork/exec）
+  # ===================================================================
+  build-macos:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 350
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-14
             arch: arm64
-            platform: darwin
-            id_secret: SELF_HOSTED_ID_MAC_ARM64
           - os: macos-13
             arch: amd64
-            platform: darwin
-            id_secret: SELF_HOSTED_ID_MAC_AMD64
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 预装构建工具
+        run: |
+          brew install node@20
+          node -v && npm -v
+          python3 --version && pip3 --version
+        shell: bash
+
+      - name: 构建前端
+        run: |
+          cd client
+          npm install
+          npm run build
+        shell: bash
+
+      - name: 安装 Python 依赖
+        run: |
+          python3 -m pip install -r server/requirements.txt
+        shell: bash
+
+      - name: PyInstaller 打包
+        run: |
+          python3 -m PyInstaller --clean build.spec
+        shell: bash
+
+      - name: 查看产物
+        run: |
+          echo "=== dist 目录 ==="
+          ls -la dist/
+          echo "=== SFshell.app ==="
+          ls -la dist/SFshell.app/Contents/MacOS/ 2>/dev/null || echo "非 .app 格式"
+        shell: bash
+
+      - name: 打包制品
+        run: |
+          cd dist
+          zip -r "SFshell-macOS-${{ matrix.arch }}.zip" *
+          echo "制品: $(pwd)/SFshell-macOS-${{ matrix.arch }}.zip"
+        shell: bash
+
+      - name: 上传制品（GitHub Actions）
+        uses: actions/upload-artifact@v4
+        with:
+          name: SFshell-macOS-${{ matrix.arch }}
+          path: dist/SFshell-macOS-${{ matrix.arch }}.zip
+          retention-days: 30
+
+  # ===================================================================
+  # Windows：orange-runner 正常，可用于 CNB 流水线
+  # ===================================================================
+  start-runner-windows:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
           - os: windows-latest
             arch: amd64
-            platform: windows
             id_secret: SELF_HOSTED_ID_WIN_AMD64
           - os: windows-11-arm
             arch: arm64
-            platform: windows
             id_secret: SELF_HOSTED_ID_WIN_ARM64
 
     env:
       RUNNER_VERSION: "1.68.0"
-      ORANGE_CONFIG_DIR: /Users/runner/orange-ci/etc/orange-ci
-      ORANGE_DATA_DIR: /Users/runner/orange-ci/data
+      ORANGE_RUNNER_CONFIG_DIR: C:\orange-ci\etc
+      ORANGE_RUNNER_DATA_DIR: C:\orange-ci\data
 
     steps:
-      - name: 初始化目录（macOS）
-        if: matrix.platform == 'darwin'
-        run: |
-          mkdir -p "$ORANGE_CONFIG_DIR"
-          mkdir -p "$ORANGE_DATA_DIR/orange-runner/logs"
-        shell: bash
-
-      - name: 初始化目录（Windows）
-        if: matrix.platform == 'windows'
+      - name: 初始化目录
         run: |
           New-Item -Path "$env:ORANGE_RUNNER_CONFIG_DIR/orange-ci" -ItemType Directory -Force
           New-Item -Path "$env:ORANGE_RUNNER_DATA_DIR/orange-runner/logs" -ItemType Directory -Force
         shell: pwsh
 
-      # ========== macOS：预装构建工具 ==========
-      - name: 预装 Node.js、Python、UPX（macOS）
-        if: matrix.platform == 'darwin'
-        run: |
-          # GitHub Actions macOS 自带 Python3，安装 Node 20
-          brew install node@20 upx
-          # 确认版本
-          node -v && npm -v
-          python3 --version && pip3 --version
-        shell: bash
-
-      # ========== macOS 节点 ==========
-      - name: 下载并配置 orange-runner（macOS）
-        if: matrix.platform == 'darwin'
-        run: |
-          set -e
-          ARCHIVE_NAME="orange-runner-${RUNNER_VERSION}-darwin-${{ matrix.arch }}.tar.gz"
-
-          curl -fsSL --max-time 300 \
-            "https://cnb.cool/cnb/cool/orange-runner-doc/-/releases/download/${RUNNER_VERSION}/${ARCHIVE_NAME}" \
-            -o "$RUNNER_TEMP/${ARCHIVE_NAME}"
-          sudo tar -zxf "$RUNNER_TEMP/${ARCHIVE_NAME}" -C /usr/local/bin/
-          sudo chmod 755 /usr/local/bin/orange-runner
-
-          echo "=== 二进制信息 ==="
-          file /usr/local/bin/orange-runner
-          upx -t /usr/local/bin/orange-runner 2>&1 && {
-            echo ">>> 检测到 UPX 压缩，正在解压..."
-            sudo upx -d /usr/local/bin/orange-runner
-            echo "解压完成"
-          } || echo "非 UPX 压缩，跳过"
-
-          echo "=== 清除扩展属性 ==="
-          sudo xattr -cr /usr/local/bin/orange-runner 2>/dev/null || true
-          xattr -l /usr/local/bin/orange-runner 2>/dev/null || echo "无扩展属性"
-
-          echo "=== 移除旧签名 ==="
-          sudo codesign --remove-signature /usr/local/bin/orange-runner 2>/dev/null || echo "无旧签名"
-
-          echo "=== 重新签名（ad-hoc，无 Hardened Runtime）==="
-          sudo codesign --force --sign - --timestamp=none /usr/local/bin/orange-runner
-
-          echo "=== 验证签名 ==="
-          codesign -dvvv /usr/local/bin/orange-runner 2>&1 || true
-          spctl --assess --verbose /usr/local/bin/orange-runner 2>&1 || true
-
-          echo "=== fork/exec 自检 ==="
-          /usr/local/bin/orange-runner --version 2>&1 || true
-          # 用 /bin/sh 测试 fork 能力
-          echo 'echo "fork/exec test OK"' | /bin/sh 2>&1
-
-          echo "=== 写入 runner 配置 ==="
-          cat > "$ORANGE_CONFIG_DIR/runner-config.json" <<EOF
-          {
-            "cpus": -1,
-            "defaultCpus": -1,
-            "memory": -1,
-            "quotaSize": {},
-            "allowUseThisRunner": {},
-            "useDocker": false,
-            "disableRsync": true,
-            "disableTls": true,
-            "connectorEndpoint": "${{ secrets.CONNECTOR_ENDPOINT }}",
-            "selfHostedId": "${{ secrets[matrix.id_secret] }}",
-            "dataRootDir": "$ORANGE_DATA_DIR"
-          }
-          EOF
-          echo "配置完成"
-        shell: bash
-
-      # ========== Windows 节点 ==========
-      - name: 下载并配置 orange-runner（Windows）
-        if: matrix.platform == 'windows'
+      - name: 下载并配置 orange-runner
         run: |
           $ArchiveName = "orange-runner-$env:RUNNER_VERSION-windows-${{ matrix.arch }}.zip"
           $DownloadPath = "$env:RUNNER_TEMP\$ArchiveName"
@@ -147,13 +125,6 @@ jobs:
           $config | ConvertTo-Json -Depth 10 | Out-File -FilePath "$env:ORANGE_RUNNER_CONFIG_DIR\orange-ci\runner-config.json" -Encoding utf8
         shell: pwsh
 
-      # ========== 启动节点 ==========
-      - name: 启动 CNB Runner（macOS）
-        if: matrix.platform == 'darwin'
-        run: sudo /usr/local/bin/orange-runner
-        shell: bash
-
-      - name: 启动 CNB Runner（Windows）
-        if: matrix.platform == 'windows'
+      - name: 启动 CNB Runner
         run: orange-runner.exe
         shell: pwsh

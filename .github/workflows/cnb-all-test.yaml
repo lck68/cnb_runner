@@ -1,4 +1,4 @@
-name: CNB 全架构构建节点
+name: CNB 全架构构建节点test
 on:
   workflow_dispatch:
 

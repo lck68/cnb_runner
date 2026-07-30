@@ -9,7 +9,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 350
     strategy:
-      fail-fast: false # 单个节点故障不影响其他节点
+      fail-fast: false
       matrix:
         include:
           - os: macos-latest
@@ -55,7 +55,6 @@ jobs:
         run: |
           ARCHIVE_NAME="orange-runner-${RUNNER_VERSION}-darwin-${{ matrix.arch }}.tar.gz"
           
-          # 下载解压到 /usr/local/bin
           curl -fsSL --max-time 300 \
             "https://cnb.cool/cnb/cool/orange-runner-doc/-/releases/download/${RUNNER_VERSION}/${ARCHIVE_NAME}" \
             -o "$RUNNER_TEMP/${ARCHIVE_NAME}"
@@ -63,7 +62,6 @@ jobs:
           sudo chmod +x /usr/local/bin/orange-runner
           sudo xattr -dr com.apple.quarantine /usr/local/bin/orange-runner 2>/dev/null || true
 
-          # 生成配置文件，动态读取对应 secret
           cat > "$ORANGE_RUNNER_CONFIG_DIR/orange-ci/runner-config.json" <<EOF
           {
             "cpus": -1,
@@ -81,7 +79,7 @@ jobs:
           EOF
         shell: bash
 
-      # ========== Windows 节点 ==========
+      # ========== Windows 节点（已修复 JSON 转义问题） ==========
       - name: 下载并配置 orange-runner（Windows）
         if: matrix.platform == 'windows'
         run: |
@@ -95,25 +93,23 @@ jobs:
           Expand-Archive -Path $DownloadPath -DestinationPath $InstallDir -Force
           
           # 添加到系统 PATH
-          echo "$InstallDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $InstallDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           
-          # 生成配置文件，动态读取对应 secret
-          $ConfigJson = @"
-          {
-            "cpus": -1,
-            "defaultCpus": -1,
-            "memory": -1,
-            "quotaSize": {},
-            "allowUseThisRunner": {},
-            "useDocker": false,
-            "disableRsync": true,
-            "disableTls": true,
-            "connectorEndpoint": "${{ secrets.CONNECTOR_ENDPOINT }}",
-            "selfHostedId": "${{ secrets[matrix.id_secret] }}",
-            "dataRootDir": "$env:ORANGE_RUNNER_DATA_DIR"
+          # 用 PowerShell 原生方法生成 JSON，自动处理转义，避免路径反斜杠导致语法错误
+          $config = [PSCustomObject]@{
+              cpus = -1
+              defaultCpus = -1
+              memory = -1
+              quotaSize = @{}
+              allowUseThisRunner = @{}
+              useDocker = $false
+              disableRsync = $true
+              disableTls = $true
+              connectorEndpoint = "${{ secrets.CONNECTOR_ENDPOINT }}"
+              selfHostedId = "${{ secrets[matrix.id_secret] }}"
+              dataRootDir = $env:ORANGE_RUNNER_DATA_DIR
           }
-          "@
-          $ConfigJson | Out-File -FilePath "$env:ORANGE_RUNNER_CONFIG_DIR\orange-ci\runner-config.json" -Encoding utf8
+          $config | ConvertTo-Json -Depth 10 | Out-File -FilePath "$env:ORANGE_RUNNER_CONFIG_DIR\orange-ci\runner-config.json" -Encoding utf8
         shell: pwsh
 
       # ========== 启动节点 ==========

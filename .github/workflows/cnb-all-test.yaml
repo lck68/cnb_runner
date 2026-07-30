@@ -1,0 +1,133 @@
+name: CNB 全架构构建节点
+on:
+  workflow_dispatch:
+
+jobs:
+  start-runner:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            arch: arm64
+            platform: darwin
+            id_secret: SELF_HOSTED_ID_MAC_ARM64
+          - os: macos-13
+            arch: amd64
+            platform: darwin
+            id_secret: SELF_HOSTED_ID_MAC_AMD64
+          - os: windows-latest
+            arch: amd64
+            platform: windows
+            id_secret: SELF_HOSTED_ID_WIN_AMD64
+          - os: windows-11-arm
+            arch: arm64
+            platform: windows
+            id_secret: SELF_HOSTED_ID_WIN_ARM64
+
+    env:
+      RUNNER_VERSION: "1.68.0"
+      ORANGE_RUNNER_CONFIG_DIR: ${{ github.workspace }}/orange-ci/etc
+      ORANGE_RUNNER_DATA_DIR: ${{ github.workspace }}/orange-ci/data
+
+    steps:
+      - name: 初始化目录（macOS）
+        if: matrix.platform == 'darwin'
+        run: |
+          mkdir -p "$ORANGE_RUNNER_CONFIG_DIR/orange-ci"
+          mkdir -p "$ORANGE_RUNNER_DATA_DIR/orange-runner/logs"
+        shell: bash
+
+      - name: 初始化目录（Windows）
+        if: matrix.platform == 'windows'
+        run: |
+          New-Item -Path "$env:ORANGE_RUNNER_CONFIG_DIR/orange-ci" -ItemType Directory -Force
+          New-Item -Path "$env:ORANGE_RUNNER_DATA_DIR/orange-runner/logs" -ItemType Directory -Force
+        shell: pwsh
+
+      # ========== macOS：预装构建工具 ==========
+      - name: 预装 Node.js 和 Python（macOS）
+        if: matrix.platform == 'darwin'
+        run: |
+          # GitHub Actions macOS 自带 Python3，安装 Node 20
+          brew install node@20
+          # 确认版本
+          node -v && npm -v
+          python3 --version && pip3 --version
+        shell: bash
+
+      # ========== macOS 节点 ==========
+      - name: 下载并配置 orange-runner（macOS）
+        if: matrix.platform == 'darwin'
+        run: |
+          ARCHIVE_NAME="orange-runner-${RUNNER_VERSION}-darwin-${{ matrix.arch }}.tar.gz"
+
+          curl -fsSL --max-time 300 \
+            "https://cnb.cool/cnb/cool/orange-runner-doc/-/releases/download/${RUNNER_VERSION}/${ARCHIVE_NAME}" \
+            -o "$RUNNER_TEMP/${ARCHIVE_NAME}"
+          sudo tar -zxf "$RUNNER_TEMP/${ARCHIVE_NAME}" -C /usr/local/bin/
+          sudo chmod +x /usr/local/bin/orange-runner
+          sudo xattr -dr com.apple.quarantine /usr/local/bin/orange-runner 2>/dev/null || true
+
+          # ad-hoc 签名，赋予 fork 子进程权限
+          sudo codesign --force --deep --sign - /usr/local/bin/orange-runner 2>/dev/null || true
+
+          cat > "$ORANGE_RUNNER_CONFIG_DIR/orange-ci/runner-config.json" <<EOF
+          {
+            "cpus": -1,
+            "defaultCpus": -1,
+            "memory": -1,
+            "quotaSize": {},
+            "allowUseThisRunner": {},
+            "useDocker": false,
+            "disableRsync": true,
+            "disableTls": true,
+            "connectorEndpoint": "${{ secrets.CONNECTOR_ENDPOINT }}",
+            "selfHostedId": "${{ secrets[matrix.id_secret] }}",
+            "dataRootDir": "$ORANGE_RUNNER_DATA_DIR"
+          }
+          EOF
+        shell: bash
+
+      # ========== Windows 节点 ==========
+      - name: 下载并配置 orange-runner（Windows）
+        if: matrix.platform == 'windows'
+        run: |
+          $ArchiveName = "orange-runner-$env:RUNNER_VERSION-windows-${{ matrix.arch }}.zip"
+          $DownloadPath = "$env:RUNNER_TEMP\$ArchiveName"
+          $InstallDir = "C:\orange-runner"
+
+          Invoke-WebRequest -Uri "https://cnb.cool/cnb/cool/orange-runner-doc/-/releases/download/$env:RUNNER_VERSION/$ArchiveName" -OutFile $DownloadPath
+          New-Item -Path $InstallDir -ItemType Directory -Force
+          Expand-Archive -Path $DownloadPath -DestinationPath $InstallDir -Force
+
+          $InstallDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+          $config = [PSCustomObject]@{
+              cpus = -1
+              defaultCpus = -1
+              memory = -1
+              quotaSize = @{}
+              allowUseThisRunner = @{}
+              useDocker = $false
+              disableRsync = $true
+              disableTls = $true
+              connectorEndpoint = "${{ secrets.CONNECTOR_ENDPOINT }}"
+              selfHostedId = "${{ secrets[matrix.id_secret] }}"
+              dataRootDir = $env:ORANGE_RUNNER_DATA_DIR
+          }
+          $config | ConvertTo-Json -Depth 10 | Out-File -FilePath "$env:ORANGE_RUNNER_CONFIG_DIR\orange-ci\runner-config.json" -Encoding utf8
+        shell: pwsh
+
+      # ========== 启动节点 ==========
+      - name: 启动 CNB Runner（macOS）
+        if: matrix.platform == 'darwin'
+        run: /usr/local/bin/orange-runner
+        shell: bash
+
+      - name: 启动 CNB Runner（Windows）
+        if: matrix.platform == 'windows'
+        run: orange-runner.exe
+        shell: pwsh

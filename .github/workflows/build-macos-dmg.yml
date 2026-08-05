@@ -151,11 +151,14 @@ jobs:
           DMG_FILE="${{ steps.build_dmg.outputs.dmg_file }}"
           TAG="${{ steps.params.outputs.release_tag }}"
           REPO_SLUG="icxk/SFshell"
+          FILE_SIZE=$(stat -f%z "$DMG_FILE" 2>/dev/null || stat -c%s "$DMG_FILE" 2>/dev/null)
 
           echo "📤 上传 DMG 到 CNB Release: ${TAG}"
+          echo "  文件: ${DMG_FILE} (${FILE_SIZE} bytes)"
 
+          # Step 1: 获取 Release ID
           RELEASE_JSON=$(curl -sH "Authorization: Bearer ${{ secrets.CNB_TOKEN }}" \
-            -H "Accept: application/json" \
+            -H "Accept: application/vnd.cnb.api+json" \
             "https://api.cnb.cool/${REPO_SLUG}/-/releases/tags/${TAG}")
           RELEASE_ID=$(echo "$RELEASE_JSON" | python3 -c \
             "import sys,json; d=json.load(sys.stdin); print(d.get('id', d.get('number', '')))")
@@ -165,21 +168,54 @@ jobs:
             echo "API 返回: ${RELEASE_JSON}"
             exit 1
           fi
-          echo "Release ID: ${RELEASE_ID}"
+          echo "  Release ID: ${RELEASE_ID}"
 
-          UPLOAD_RESP=$(curl -s -w "\n%{http_code}" -X POST \
+          # Step 2: 获取预签名上传 URL
+          UPLOAD_INFO=$(curl -s -X POST \
             -H "Authorization: Bearer ${{ secrets.CNB_TOKEN }}" \
-            -F "file=@${DMG_FILE}" \
-            "https://api.cnb.cool/${REPO_SLUG}/-/releases/${RELEASE_ID}/assets")
+            -H "Content-Type: application/json" \
+            -H "Accept: application/vnd.cnb.api+json" \
+            -d "{\"asset_name\":\"${DMG_FILE}\",\"size\":${FILE_SIZE}}" \
+            "https://api.cnb.cool/${REPO_SLUG}/-/releases/${RELEASE_ID}/asset-upload-url")
 
-          HTTP_CODE=$(echo "$UPLOAD_RESP" | tail -1)
+          UPLOAD_URL=$(echo "$UPLOAD_INFO" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('upload_url', ''))")
+          VERIFY_URL=$(echo "$UPLOAD_INFO" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('verify_url', ''))")
 
-          if [ "${HTTP_CODE}" = "200" ] || [ "${HTTP_CODE}" = "201" ]; then
+          if [ -z "${UPLOAD_URL}" ]; then
+            echo "ERROR: 无法获取上传 URL"
+            echo "API 返回: ${UPLOAD_INFO}"
+            exit 1
+          fi
+          echo "  Upload URL 已获取"
+
+          # Step 3: PUT 文件到预签名 URL
+          HTTP_CODE=$(curl -s -o /tmp/cnb-upload.txt -w "%{http_code}" \
+            -X PUT --data-binary "@${DMG_FILE}" \
+            -H "Content-Type: application/octet-stream" \
+            "${UPLOAD_URL}")
+
+          if [ "${HTTP_CODE}" != "200" ] && [ "${HTTP_CODE}" != "201" ] && [ "${HTTP_CODE}" != "204" ]; then
+            echo "ERROR: 文件上传失败 (HTTP ${HTTP_CODE})"
+            cat /tmp/cnb-upload.txt 2>/dev/null
+            exit 1
+          fi
+          echo "  文件已上传 (HTTP ${HTTP_CODE})"
+
+          # Step 4: 确认上传
+          VERIFY_RESP=$(curl -s -X POST "${VERIFY_URL}" \
+            -H "Authorization: Bearer ${{ secrets.CNB_TOKEN }}" \
+            -H "Accept: application/vnd.cnb.api+json")
+          VERIFY_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${VERIFY_URL}" \
+            -H "Authorization: Bearer ${{ secrets.CNB_TOKEN }}" \
+            -H "Accept: application/vnd.cnb.api+json")
+
+          if echo "$VERIFY_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('errcode',0)==0 else 1)" 2>/dev/null; then
+            echo "✅ DMG 已上传到 CNB Release ${TAG}"
+          elif [ "${VERIFY_HTTP}" = "200" ] || [ "${VERIFY_HTTP}" = "201" ] || [ "${VERIFY_HTTP}" = "204" ]; then
             echo "✅ DMG 已上传到 CNB Release ${TAG}"
           else
-            echo "ERROR: 上传失败 (HTTP ${HTTP_CODE})"
-            echo "$UPLOAD_RESP"
-            exit 1
+            echo "⚠️  上传确认返回 (HTTP ${VERIFY_HTTP}): ${VERIFY_RESP}"
+            echo "   文件可能已上传，请手动检查 CNB Release"
           fi
         shell: bash
 

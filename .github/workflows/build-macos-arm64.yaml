@@ -48,7 +48,7 @@ jobs:
         run: |
           source .venv/bin/activate
           cd repo
-          pyinstaller --clean build.spec
+          pyinstaller --clean build_macos.spec
         shell: bash
 
       - name: 生成 DMG 安装包

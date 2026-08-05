@@ -84,7 +84,7 @@ jobs:
       - name: 生成 DMG 安装包
         id: build_dmg
         run: |
-          VERSION="${{ steps.params.outputs.version }}"
+          RELEASE_TAG="${{ steps.params.outputs.release_tag }}"
           APP="repo/dist/SFshell.app"
 
           echo "=== 验证 .app ==="
@@ -105,8 +105,8 @@ jobs:
           DMG_SIZE=$((APP_SIZE + 20480))
 
           DMG_TMP="SFshell-tmp.dmg"
-          if [ -n "${VERSION}" ]; then
-            DMG_FINAL="SFshell-${VERSION}-macOS-arm64.dmg"
+          if [ -n "${RELEASE_TAG}" ]; then
+            DMG_FINAL="SFshell-${RELEASE_TAG}-macOS-arm64.dmg"
           else
             DMG_FINAL="SFshell-macOS-arm64.dmg"
           fi
@@ -155,6 +155,7 @@ jobs:
           echo "📤 上传 DMG 到 CNB Release: ${TAG}"
 
           RELEASE_JSON=$(curl -sH "Authorization: Bearer ${{ secrets.CNB_TOKEN }}" \
+            -H "Accept: application/json" \
             "https://api.cnb.cool/${REPO_SLUG}/-/releases/tags/${TAG}")
           RELEASE_ID=$(echo "$RELEASE_JSON" | python3 -c \
             "import sys,json; d=json.load(sys.stdin); print(d.get('id', d.get('number', '')))")

@@ -1,0 +1,190 @@
+# ─────────────────────────────────────────────────────
+# SFshell — GitHub Actions macOS arm64 DMG 构建
+# 由 CNB CI 通过 repository_dispatch 触发，构建完成后传回 CNB Release
+# ─────────────────────────────────────────────────────
+
+name: GitHub macOS arm64 DMG Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: '要构建的分支'
+        required: false
+        default: 'main'
+      release_tag:
+        description: 'Release 版本标签 (如 v1.0.0)'
+        required: false
+        default: ''
+  repository_dispatch:
+    types: [build-macos-dmg]
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+    timeout-minutes: 120
+
+    steps:
+      - name: 解析触发参数
+        id: params
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            BRANCH="${{ github.event.client_payload.branch }}"
+            RELEASE_TAG="${{ github.event.client_payload.release_tag }}"
+          else
+            BRANCH="${{ github.event.inputs.branch }}"
+            RELEASE_TAG="${{ github.event.inputs.release_tag }}"
+          fi
+          BRANCH="${BRANCH:-main}"
+          echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
+          echo "release_tag=${RELEASE_TAG}" >> $GITHUB_OUTPUT
+          VERSION="${RELEASE_TAG#v}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "::notice:: 分支=${BRANCH}, 版本标签=${RELEASE_TAG:-未指定(仅构建测试)}"
+        shell: bash
+
+      - name: 从 CNB 克隆代码
+        run: |
+          git clone --depth 1 --branch "${{ steps.params.outputs.branch }}" \
+            "https://cnbcool:${{ secrets.CNB_TOKEN }}@cnb.cool/icxk/SFshell.git" repo
+          echo "=== 克隆完成 ==="
+          ls -la repo/
+        shell: bash
+
+      - name: 预装构建工具
+        run: |
+          brew install node@20 python@3.12
+          echo "$(brew --prefix python@3.12)/libexec/bin" >> $GITHUB_PATH
+          node -v && npm -v
+          python3 --version
+        shell: bash
+
+      - name: 构建前端
+        run: |
+          cd repo/client
+          npm install
+          npm run build
+        shell: bash
+
+      - name: 创建虚拟环境并安装依赖
+        run: |
+          python3 -m venv .venv
+          source .venv/bin/activate
+          cd repo
+          pip install -r server/requirements.txt
+        shell: bash
+
+      - name: PyInstaller 打包
+        run: |
+          source .venv/bin/activate
+          cd repo
+          pyinstaller --clean build_macos.spec
+        shell: bash
+
+      - name: 生成 DMG 安装包
+        id: build_dmg
+        run: |
+          VERSION="${{ steps.params.outputs.version }}"
+          APP="repo/dist/SFshell.app"
+
+          echo "=== 验证 .app ==="
+          ls "$APP/Contents/MacOS/SFshell" || {
+            echo "ERROR: .app 不存在，dist 目录内容:"
+            ls -la repo/dist/
+            exit 1
+          }
+          echo "OK"
+          echo ""
+
+          STAGE="dmg_stage"
+          mkdir -p "$STAGE"
+          cp -R "$APP" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+
+          APP_SIZE=$(du -sk "$STAGE" | cut -f1)
+          DMG_SIZE=$((APP_SIZE + 20480))
+
+          DMG_TMP="SFshell-tmp.dmg"
+          if [ -n "${VERSION}" ]; then
+            DMG_FINAL="SFshell-${VERSION}-macOS-arm64.dmg"
+          else
+            DMG_FINAL="SFshell-macOS-arm64.dmg"
+          fi
+
+          hdiutil create -volname "SFshell" -srcfolder "$STAGE" -ov -format UDRW \
+            -size ${DMG_SIZE}k "$DMG_TMP"
+
+          DEV=$(hdiutil attach -readwrite -noverify -noautoopen "$DMG_TMP" | egrep '^/dev/' | sed 1q | awk '{print $1}')
+          sleep 2
+
+          osascript <<EOF
+          tell application "Finder"
+            tell disk "SFshell"
+              open
+              set current view of container window to icon view
+              set toolbar visible of container window to false
+              set statusbar visible of container window to false
+              set the bounds of container window to {400, 200, 900, 500}
+              set viewOptions to the icon view options of container window
+              set arrangement of viewOptions to not arranged
+              set icon size of viewOptions to 96
+              set position of item "SFshell.app" of container window to {140, 130}
+              set position of item "Applications" of container window to {360, 130}
+              close
+            end tell
+          end tell
+          EOF
+
+          hdiutil detach "$DEV" -force
+          hdiutil convert "$DMG_TMP" -format UDZO -imagekey zlib-level=9 -o "$DMG_FINAL"
+          rm -f "$DMG_TMP"
+
+          echo ""
+          echo "=== DMG 已生成 ==="
+          ls -lh "$DMG_FINAL"
+          echo "dmg_file=${DMG_FINAL}" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: 上传 DMG 到 CNB Release（传回）
+        if: steps.params.outputs.release_tag != ''
+        run: |
+          DMG_FILE="${{ steps.build_dmg.outputs.dmg_file }}"
+          TAG="${{ steps.params.outputs.release_tag }}"
+          REPO_SLUG="icxk/SFshell"
+
+          echo "📤 上传 DMG 到 CNB Release: ${TAG}"
+
+          RELEASE_JSON=$(curl -sH "Authorization: Bearer ${{ secrets.CNB_TOKEN }}" \
+            "https://api.cnb.cool/${REPO_SLUG}/-/releases/tags/${TAG}")
+          RELEASE_ID=$(echo "$RELEASE_JSON" | python3 -c \
+            "import sys,json; d=json.load(sys.stdin); print(d.get('id', d.get('number', '')))")
+
+          if [ -z "${RELEASE_ID}" ]; then
+            echo "ERROR: 无法获取 Release ID for tag ${TAG}"
+            echo "API 返回: ${RELEASE_JSON}"
+            exit 1
+          fi
+          echo "Release ID: ${RELEASE_ID}"
+
+          UPLOAD_RESP=$(curl -s -w "\n%{http_code}" -X POST \
+            -H "Authorization: Bearer ${{ secrets.CNB_TOKEN }}" \
+            -F "file=@${DMG_FILE}" \
+            "https://api.cnb.cool/${REPO_SLUG}/-/releases/${RELEASE_ID}/assets")
+
+          HTTP_CODE=$(echo "$UPLOAD_RESP" | tail -1)
+
+          if [ "${HTTP_CODE}" = "200" ] || [ "${HTTP_CODE}" = "201" ]; then
+            echo "✅ DMG 已上传到 CNB Release ${TAG}"
+          else
+            echo "ERROR: 上传失败 (HTTP ${HTTP_CODE})"
+            echo "$UPLOAD_RESP"
+            exit 1
+          fi
+        shell: bash
+
+      - name: 上传制品（GitHub 备份）
+        uses: actions/upload-artifact@v4
+        with:
+          name: SFshell-macOS-arm64
+          path: ${{ steps.build_dmg.outputs.dmg_file }}
+          retention-days: 7
